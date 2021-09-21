@@ -1,0 +1,481 @@
+const fs = require('fs');
+
+var approvalJson = {};
+
+function stringWithArrow(text, posStart, posEnd) {
+    var result = '';
+}
+
+class BasicError {
+    constructor(name, details) {
+        this.name = name;
+        this.details = details;
+    }
+
+    log() {
+        var result = `${this.name}:${this.details}`;
+        console.log(result);
+        // return result;
+    }
+}
+
+class IllegalCommandError extends BasicError {
+    constructor(details) {
+        super("Illegal Command", details);
+    }
+}
+
+class InvalidFileError extends BasicError {
+    constructor(details) {
+        super("Invalid file", details);
+    }
+}
+
+class InvalidSyntaxError extends BasicError {
+    constructor(details) {
+        super("Invalid file", details);
+    }
+}
+
+const TokenType = {
+    ADD: "ADD", EOF: "EOF"
+};
+
+const ApprovalType = {
+    SequentialApproval: "SequentialApproval",
+    ParallelApproval: "ParallelApproval",
+}
+
+const UserType = {
+    Approver: "Approver"
+
+}
+
+Object.freeze(TokenType);
+
+class Token {
+
+    /**
+     *
+     * @param {String} type
+     * @param {String|Number} value
+     */
+    constructor(type, value, posStart, posEnd, level,subType) {
+        this.type = type;
+        this.value = value;
+        this.level = level;
+        this.posStart = posStart;
+        this.posEnd = posEnd;
+    }
+
+    toString() {
+        if (this.value) return `${this.type}:${this.value}`;
+        return this.type;
+    }
+}
+
+class TokenList {
+    /**
+     * @private
+     */
+    tokens = [];
+    /**
+     * @private
+     */
+    tokensRaw = [];
+
+    constructor() {
+        this.tokens = [];
+        this.tokensRaw = [];
+    }
+
+    /**
+     *
+     * @param {Token} token
+     */
+    add(token) {
+        this.tokens.push(token);
+        if (token.value) this.tokensRaw.push(`${token.type}:${token.value}`)
+        else this.tokensRaw.push(`${token.type}`)
+    }
+
+    /**
+     *
+     * @param {Number} index
+     */
+    remove(index) {
+        this.tokens.slice(index, 1);
+        this.tokensRaw.slice(index, 1);
+    }
+
+    listTokens() {
+        return this.tokens;
+    }
+
+    list() {
+        return this.tokensRaw;
+    }
+}
+
+class Position {
+    constructor(idx, ln, col, fn, ftxt) {
+        this.idx = idx;
+        this.ln = ln;
+        this.col = col;
+        this.fn = fn;
+        this.ftxt = ftxt;
+    }
+
+    advance(currentCharacter) {
+        this.idx++;
+        this.col++;
+
+        if (currentCharacter == '\n') {
+            this.ln++;
+            this.col = 0;
+        }
+
+        return this;
+    }
+
+    copy() {
+        return new Position(this.idx, this.ln, this.col, this.fn, this.ftxt);
+    }
+
+}
+
+class Lexer {
+    /**
+     *
+     * @param {String} fn
+     * @param {String} data
+     */
+    constructor(fn, data) {
+        this.fn = fn;
+        this.count = 0;
+        this.data = data.replace(/\n/, " EOF ").split(/[\s,\r]+/);
+        // console.log(this.data);
+        this.tokens = new TokenList();
+        this.currentChar = null;
+        this.pos = new Position(-1, 0, -1, fn, data);
+        this.advance();
+    }
+
+    advance() {
+        this.pos.advance(this.currentChar);
+        if (this.pos.idx < this.data.length) {
+            this.currentChar = this.data[this.pos.idx];
+        } else {
+            this.currentChar = null;
+        }
+    }
+
+
+
+    /**
+     *
+     * @returns {Array}
+     */
+    start() {
+        var tokens = [];
+        while (this.currentChar != null) {
+            if (ApprovalType[this.currentChar] != null) {
+                tokens.push(this.makeLevel())
+                this.advance();
+            } else if (this.currentChar == UserType.Approver) {
+                tokens.push(this.approverLevel())
+                this.advance();
+            } else if (TokenType[this.currentChar] != null) {
+                if (this.currentChar == TokenType.EOF) {
+                    this.count += 1;
+                }
+                tokens.push(new Token(TokenType[this.currentChar], null, this.pos));
+                this.advance();
+            } else if (this.currentChar.includes("\n")) {
+
+                tokens.push(new Token(TokenType.EOF, null, this.pos))
+                this.advance();
+            } else {
+                var posStart = this.pos.copy();
+                var char = this.currentChar;
+                this.advance();
+                new IllegalCommandError(posStart, this.pos, `'${char}'`).log();
+                return null;
+            }
+        }
+        tokens.push(new Token(TokenType.EOF, null, this.pos));
+        return tokens;
+    }
+
+    approverLevel() {
+        var userType = this.currentChar;
+        var posStart = this.pos.copy();
+        this.advance();
+        var approverName = this.currentChar;
+        this.advance();
+        if (this.currentChar == undefined || this.currentChar.toLowerCase() != "level") {
+            return new IllegalCommandError(`level command must be included. '${this.currentChar}' is Invalid`);
+        }
+        this.advance();
+        var levelInt = parseInt(this.currentChar);
+        return new Token(UserType[userType], approverName, this.pos, null, levelInt);
+        return tokens;
+    }
+
+
+    makeLevel() {
+        var approvalTypeChar = this.currentChar;
+        var posStart = this.pos.copy();
+        this.advance();
+        if (this.currentChar == undefined || this.currentChar.toLowerCase() != "level") {
+            return new IllegalCommandError(`level command must be included. '${this.currentChar}' is Invalid`);
+        }
+        this.advance();
+        var levelInt = parseInt(this.currentChar);
+        return new Token(ApprovalType[approvalTypeChar], levelInt, posStart, this.pos);
+    }
+}
+
+class TokenNode {
+    constructor(tok) {
+        this.tok = tok;
+        this.name = "TokenNode";
+
+    }
+
+    toString() {
+        return this.tok.toString();
+    }
+}
+
+class BinOpNode {
+    constructor(leftNode, opTok, rightNode) {
+        this.leftNode = leftNode;
+        this.opTok = opTok;
+        this.rightNode = rightNode;
+
+        this.name = "BinOpNode";
+    }
+
+    toString() {
+        return `( ${this.leftNode.toString()},${this.opTok.toString()},${this.rightNode.toString()})`;
+    }
+}
+
+class UnaryOpNode {
+    constructor(opTok, node) {
+        this.opTok = opTok;
+        this.node = node;
+    }
+
+    toString() {
+        return `( ${this.opTok.toString()},${this.node.toString()})`;
+    }
+}
+
+class ParseResult {
+    constructor() {
+        this.error = null;
+        this.node = null;
+    }
+
+    register(res) {
+        if (res.error) this.error = res.error;
+        return res.node
+    }
+
+    success(node) {
+        this.node = node;
+        return this;
+    }
+    failure(error) {
+        if (!this.error) {
+            this.error = error;
+        }
+        return this;
+    }
+
+}
+
+class SequentialApprovalNode {
+    constructor(level, type, approver) {
+        this.level = level;
+        this.type = type;
+        if (!approver) this.approver = new ApproverNode();
+        else this.approver = approver;
+    }
+}
+
+class ParrellelApprovalNode {
+    constructor(level, type, approver) {
+        this.level = level;
+        this.type = type;
+        if (!approver) this.approver = new Array();
+        else this.approver = approver;
+    }
+}
+
+class ApproverNode {
+    constructor(name) {
+        this.name = name;
+    }
+}
+
+
+class evaluate {
+    constructor(returnObject) {
+        this.returnObject = returnObject;
+    }
+
+    Expression(node) {
+        if (node instanceof UnaryOpNode) {
+            if (node.opTok.type == TokenType.ADD) {
+                switch (node.node.tok.type) {
+                    case ApprovalType.SequentialApproval:
+                        var token = node.node.tok;
+                        var seqApproval = new SequentialApprovalNode(token.value, token.type);
+                        var seqApprovalJson = JSON.stringify(seqApproval);
+                        this.returnObject[seqApproval.level] = JSON.parse(seqApprovalJson);
+                        break;
+                    case ApprovalType.ParallelApproval:
+                        var token = node.node.tok;
+                        var seqApproval = new ParrellelApprovalNode(token.value, token.type);
+                        var seqApprovalJson = JSON.stringify(seqApproval);
+                        this.returnObject[seqApproval.level] = JSON.parse(seqApprovalJson);
+                        break;
+                    default:
+                        null
+                        break;
+                }
+            }
+        }
+
+
+        return this.returnObject;
+    }
+}
+
+class Parser {
+    constructor(tokens, count, tokIdx) {
+        this.tokens = tokens;
+        this.count = count;
+        this.tokIdx = tokIdx;
+        this.advance();
+    }
+
+    advance() {
+        this.tokIdx++;
+        if (this.tokIdx < this.tokens.length) {
+            this.currentTok = this.tokens[this.tokIdx];
+        }
+        return this.currentTok;
+    }
+
+    parse() {
+        var countVal = this.count;
+        var res = this.expr();
+        if (!res.error && this.currentTok.type != TokenType.EOF) {
+            return res.failure(new InvalidSyntaxError(
+                this.currentTok.posStart, this.currentTok.posEnd,
+                "Expected Approal Type"
+            ))
+        }
+        // countVal -= 1;
+        return res;
+    }
+
+    factor() {
+        var res = new ParseResult();
+        var tok = this.currentTok;
+        if ([TokenType.ADD].includes(tok.type)) {
+            res.register(this.advance());
+            var factor = res.register(this.factor());
+            if (res.error) return res;
+            return res.success(new UnaryOpNode(tok, factor))
+        } else if ([ApprovalType.SequentialApproval, ApprovalType.ParallelApproval].includes(tok.type)) {
+            res.register(this.advance());
+            return res.success(new TokenNode(tok))
+        }
+        return res.failure(new InvalidSyntaxError(
+            tok.posStart, tok.posEnd,
+            "Expected int or float"
+        ).log())
+    }
+
+    term() {
+        return this.binOp(this.factor.bind(this), [ApprovalType.SequentialApproval, ApprovalType.ParallelApproval])
+    }
+
+    expr() {
+        return this.binOp(this.factor.bind(this), [TokenType.ADD])
+        // return this.binOp(this.term.bind(this), [TokenType.ADD])
+    }
+
+    /**
+     *
+     * @param {Function} func
+     * @param {Array} ops
+     * @returns
+     */
+    binOp(func, ops) {
+        var res = new ParseResult();
+        var left = res.register(func())
+        if (res.error) return res;
+
+        while (ops.includes(this.currentTok.type)) {
+            var opTok = this.currentTok;
+            res.register(this.advance());
+            var right = res.register(func());
+            if (res.error) return res;
+            left = new BinOpNode(left, opTok, right);
+        }
+
+        return res.success(left);
+    }
+}
+
+
+
+
+/**
+ *
+ * @param {Array} args
+ */
+
+function main(args) {
+    args.shift();
+    args.shift();
+    if (args[0] === "compile") {
+        var path = args[1];
+        if (fs.existsSync(path)) {
+            var val = fs.readFileSync(path, { encoding: "utf-8" });
+            var lexer = new Lexer(path, val);
+            // console.log(lexer.start().list());
+            var returns = lexer.start();
+
+            if (!(returns == null)) {
+                var parser = null;
+                var lineCount = lexer.count;
+                var returnObject = {};
+                while (lineCount > -1) {
+                    if (!parser) parser = new Parser(returns, lexer.count, -1);
+                    else parser = new Parser(returns, lexer.count, parser.tokIdx);
+                    var ast = parser.parse();
+                    if (ast.error) return ast.error.log();
+                    returnObject = new evaluate(returnObject).Expression(ast.node);
+                    console.log(Object.values(returnObject));
+                    lineCount -= 1;
+                }
+            }
+        } else {
+            return new InvalidFileError(`file '${path}' could not be found!`).log();
+        }
+    } else {
+        return new IllegalCommandError(`Command '${args[0]}' could not be found!`).log();
+    }
+}
+
+
+main(process.argv);
+
+Approver ADD tishank level 2
